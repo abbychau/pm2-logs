@@ -191,6 +191,102 @@ app.get('/', async (req, res) => {
             color: #999;
             font-style: italic;
         }
+        .process-controls {
+            margin-top: 15px;
+            padding-top: 15px;
+            border-top: 1px solid #eee;
+        }
+        .control-btn {
+            display: inline-block;
+            margin-right: 8px;
+            margin-bottom: 5px;
+            padding: 6px 12px;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 12px;
+            font-weight: bold;
+            text-transform: uppercase;
+            transition: all 0.2s;
+        }
+        .control-btn:hover {
+            transform: translateY(-1px);
+        }
+        .control-btn:disabled {
+            opacity: 0.6;
+            cursor: not-allowed;
+            transform: none;
+        }
+        .btn-start {
+            background-color: #28a745;
+            color: white;
+        }
+        .btn-start:hover:not(:disabled) {
+            background-color: #218838;
+        }
+        .btn-stop {
+            background-color: #dc3545;
+            color: white;
+        }
+        .btn-stop:hover:not(:disabled) {
+            background-color: #c82333;
+        }
+        .btn-restart {
+            background-color: #ffc107;
+            color: #212529;
+        }
+        .btn-restart:hover:not(:disabled) {
+            background-color: #e0a800;
+        }
+        .btn-git-pull {
+            background-color: #6f42c1;
+            color: white;
+        }
+        .btn-git-pull:hover:not(:disabled) {
+            background-color: #5a32a3;
+        }
+        .btn-npm-install {
+            background-color: #ff6b35;
+            color: white;
+        }
+        .btn-npm-install:hover:not(:disabled) {
+            background-color: #e55a30;
+        }
+        .btn-npm-build {
+            background-color: #17a2b8;
+            color: white;
+        }
+        .btn-npm-build:hover:not(:disabled) {
+            background-color: #138496;
+        }
+        .btn-npm-deploy {
+            background-color: #20c997;
+            color: white;
+        }
+        .btn-npm-deploy:hover:not(:disabled) {
+            background-color: #1ba085;
+        }
+        .loading {
+            opacity: 0.7;
+            pointer-events: none;
+        }
+        .success-message, .error-message {
+            padding: 8px 12px;
+            border-radius: 4px;
+            margin-top: 10px;
+            font-size: 12px;
+            display: none;
+        }
+        .success-message {
+            background-color: #d4edda;
+            color: #155724;
+            border: 1px solid #c3e6cb;
+        }
+        .error-message {
+            background-color: #f8d7da;
+            color: #721c24;
+            border: 1px solid #f5c6cb;
+        }
     </style>
 </head>
 <body>
@@ -214,6 +310,7 @@ app.get('/', async (req, res) => {
                     <div>Restarts: ${process.pm2_env.restart_time}</div>
                     <div>CPU: ${process.monit.cpu}%</div>
                     <div>Memory: ${Math.round(process.monit.memory / 1024 / 1024)}MB</div>
+                    <div style="font-size: 12px; color: #888; margin-top: 5px;">Dir: ${process.pm2_env.pm_cwd}</div>
                 </div>
                 <div class="log-links">
 `;
@@ -228,6 +325,31 @@ app.get('/', async (req, res) => {
 
             html += `
                 </div>
+                <div class="process-controls">
+                    <button class="control-btn btn-start" onclick="controlProcess('${process.name}', 'start')" ${status === 'online' ? 'disabled' : ''}>
+                        Start
+                    </button>
+                    <button class="control-btn btn-stop" onclick="controlProcess('${process.name}', 'stop')" ${status !== 'online' ? 'disabled' : ''}>
+                        Stop
+                    </button>
+                    <button class="control-btn btn-restart" onclick="controlProcess('${process.name}', 'restart')" ${status !== 'online' ? 'disabled' : ''}>
+                        Restart
+                    </button>
+                    <button class="control-btn btn-git-pull" onclick="gitPull('${process.name}')">
+                        Git Pull
+                    </button>
+                    <button class="control-btn btn-npm-install" onclick="npmInstall('${process.name}')">
+                        NPM Install
+                    </button>
+                    <button class="control-btn btn-npm-build" onclick="npmBuild('${process.name}')">
+                        NPM Build
+                    </button>
+                    <button class="control-btn btn-npm-deploy" onclick="npmDeploy('${process.name}')">
+                        NPM Deploy
+                    </button>
+                    <div class="success-message" id="success-${process.name}"></div>
+                    <div class="error-message" id="error-${process.name}"></div>
+                </div>
             </div>
 `;
         });
@@ -235,6 +357,281 @@ app.get('/', async (req, res) => {
         html += `
         </div>
     </div>
+    
+    <script>
+        async function controlProcess(processName, action) {
+            const card = document.querySelector(\`[data-process="\${processName}"]\`) || 
+                        document.evaluate(\`//div[contains(@class, 'process-card') and .//div[contains(@class, 'process-name') and text()='\${processName}']]\`, 
+                                        document, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null).singleNodeValue;
+            
+            const successEl = document.getElementById(\`success-\${processName}\`);
+            const errorEl = document.getElementById(\`error-\${processName}\`);
+            const buttons = card.querySelectorAll('.control-btn');
+            
+            // Clear previous messages
+            successEl.style.display = 'none';
+            errorEl.style.display = 'none';
+            
+            // Add loading state
+            card.classList.add('loading');
+            buttons.forEach(btn => btn.disabled = true);
+            
+            try {
+                const response = await fetch(\`/api/processes/\${processName}/\${action}\`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    }
+                });
+                
+                const result = await response.json();
+                
+                if (response.ok && result.success) {
+                    successEl.textContent = result.message;
+                    successEl.style.display = 'block';
+                    
+                    // Refresh the page after a short delay to show updated status
+                    setTimeout(() => {
+                        window.location.reload();
+                    }, 1500);
+                } else {
+                    throw new Error(result.error || 'Unknown error occurred');
+                }
+                
+            } catch (error) {
+                errorEl.textContent = \`Error: \${error.message}\`;
+                errorEl.style.display = 'block';
+                
+                // Re-enable buttons on error
+                card.classList.remove('loading');
+                updateButtonStates(processName, 'unknown'); // Will be corrected on next refresh
+            }
+        }
+        
+        async function gitPull(processName) {
+            const card = document.querySelector(\`[data-process="\${processName}"]\`) || 
+                        document.evaluate(\`//div[contains(@class, 'process-card') and .//div[contains(@class, 'process-name') and text()='\${processName}']]\`, 
+                                        document, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null).singleNodeValue;
+            
+            const successEl = document.getElementById(\`success-\${processName}\`);
+            const errorEl = document.getElementById(\`error-\${processName}\`);
+            const buttons = card.querySelectorAll('.control-btn');
+            
+            // Clear previous messages
+            successEl.style.display = 'none';
+            errorEl.style.display = 'none';
+            
+            // Add loading state
+            card.classList.add('loading');
+            buttons.forEach(btn => btn.disabled = true);
+            
+            try {
+                const response = await fetch(\`/api/git-pull/\${processName}\`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    }
+                });
+                
+                const result = await response.json();
+                
+                if (response.ok && result.success) {
+                    successEl.innerHTML = \`<strong>Git Pull Result:</strong><br><pre style="margin: 5px 0; white-space: pre-wrap; font-size: 11px;">\${result.output}</pre>\`;
+                    successEl.style.display = 'block';
+                } else {
+                    throw new Error(result.error || 'Unknown error occurred');
+                }
+                
+            } catch (error) {
+                errorEl.textContent = \`Git Pull Error: \${error.message}\`;
+                errorEl.style.display = 'block';
+            } finally {
+                // Re-enable buttons
+                card.classList.remove('loading');
+                buttons.forEach(btn => {
+                    btn.disabled = false;
+                });
+                // Update button states based on current status
+                const statusElement = card.querySelector('.status');
+                if (statusElement) {
+                    updateButtonStates(processName, statusElement.textContent);
+                }
+            }
+        }
+        
+        async function npmInstall(processName) {
+            const card = document.querySelector(\`[data-process="\${processName}"]\`) || 
+                        document.evaluate(\`//div[contains(@class, 'process-card') and .//div[contains(@class, 'process-name') and text()='\${processName}']]\`, 
+                                        document, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null).singleNodeValue;
+            
+            const successEl = document.getElementById(\`success-\${processName}\`);
+            const errorEl = document.getElementById(\`error-\${processName}\`);
+            const buttons = card.querySelectorAll('.control-btn');
+            
+            // Clear previous messages
+            successEl.style.display = 'none';
+            errorEl.style.display = 'none';
+            
+            // Add loading state
+            card.classList.add('loading');
+            buttons.forEach(btn => btn.disabled = true);
+            
+            try {
+                const response = await fetch(\`/api/npm-install/\${processName}\`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    }
+                });
+                
+                const result = await response.json();
+                
+                if (response.ok && result.success) {
+                    successEl.innerHTML = \`<strong>NPM Install Result:</strong><br><pre style="margin: 5px 0; white-space: pre-wrap; font-size: 11px;">\${result.output}</pre>\`;
+                    successEl.style.display = 'block';
+                } else {
+                    throw new Error(result.error || 'Unknown error occurred');
+                }
+                
+            } catch (error) {
+                errorEl.textContent = \`NPM Install Error: \${error.message}\`;
+                errorEl.style.display = 'block';
+            } finally {
+                // Re-enable buttons
+                card.classList.remove('loading');
+                buttons.forEach(btn => {
+                    btn.disabled = false;
+                });
+                // Update button states based on current status
+                const statusElement = card.querySelector('.status');
+                if (statusElement) {
+                    updateButtonStates(processName, statusElement.textContent);
+                }
+            }
+        }
+        
+        async function npmBuild(processName) {
+            const card = document.querySelector(\`[data-process="\${processName}"]\`) || 
+                        document.evaluate(\`//div[contains(@class, 'process-card') and .//div[contains(@class, 'process-name') and text()='\${processName}']]\`, 
+                                        document, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null).singleNodeValue;
+            
+            const successEl = document.getElementById(\`success-\${processName}\`);
+            const errorEl = document.getElementById(\`error-\${processName}\`);
+            const buttons = card.querySelectorAll('.control-btn');
+            
+            // Clear previous messages
+            successEl.style.display = 'none';
+            errorEl.style.display = 'none';
+            
+            // Add loading state
+            card.classList.add('loading');
+            buttons.forEach(btn => btn.disabled = true);
+            
+            try {
+                const response = await fetch(\`/api/npm-build/\${processName}\`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    }
+                });
+                
+                const result = await response.json();
+                
+                if (response.ok && result.success) {
+                    successEl.innerHTML = \`<strong>NPM Build Result:</strong><br><pre style="margin: 5px 0; white-space: pre-wrap; font-size: 11px;">\${result.output}</pre>\`;
+                    successEl.style.display = 'block';
+                } else {
+                    throw new Error(result.error || 'Unknown error occurred');
+                }
+                
+            } catch (error) {
+                errorEl.textContent = \`NPM Build Error: \${error.message}\`;
+                errorEl.style.display = 'block';
+            } finally {
+                // Re-enable buttons
+                card.classList.remove('loading');
+                buttons.forEach(btn => {
+                    btn.disabled = false;
+                });
+                // Update button states based on current status
+                const statusElement = card.querySelector('.status');
+                if (statusElement) {
+                    updateButtonStates(processName, statusElement.textContent);
+                }
+            }
+        }
+        
+        async function npmDeploy(processName) {
+            const card = document.querySelector(\`[data-process="\${processName}"]\`) || 
+                        document.evaluate(\`//div[contains(@class, 'process-card') and .//div[contains(@class, 'process-name') and text()='\${processName}']]\`, 
+                                        document, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null).singleNodeValue;
+            
+            const successEl = document.getElementById(\`success-\${processName}\`);
+            const errorEl = document.getElementById(\`error-\${processName}\`);
+            const buttons = card.querySelectorAll('.control-btn');
+            
+            // Clear previous messages
+            successEl.style.display = 'none';
+            errorEl.style.display = 'none';
+            
+            // Add loading state
+            card.classList.add('loading');
+            buttons.forEach(btn => btn.disabled = true);
+            
+            try {
+                const response = await fetch(\`/api/npm-deploy/\${processName}\`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    }
+                });
+                
+                const result = await response.json();
+                
+                if (response.ok && result.success) {
+                    successEl.innerHTML = \`<strong>NPM Deploy Result:</strong><br><pre style="margin: 5px 0; white-space: pre-wrap; font-size: 11px;">\${result.output}</pre>\`;
+                    successEl.style.display = 'block';
+                } else {
+                    throw new Error(result.error || 'Unknown error occurred');
+                }
+                
+            } catch (error) {
+                errorEl.textContent = \`NPM Deploy Error: \${error.message}\`;
+                errorEl.style.display = 'block';
+            } finally {
+                // Re-enable buttons
+                card.classList.remove('loading');
+                buttons.forEach(btn => {
+                    btn.disabled = false;
+                });
+                // Update button states based on current status
+                const statusElement = card.querySelector('.status');
+                if (statusElement) {
+                    updateButtonStates(processName, statusElement.textContent);
+                }
+            }
+        }
+        
+        function updateButtonStates(processName, status) {
+            const card = document.evaluate(\`//div[contains(@class, 'process-card') and .//div[contains(@class, 'process-name') and text()='\${processName}']]\`, 
+                                         document, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null).singleNodeValue;
+            if (!card) return;
+            
+            const startBtn = card.querySelector('.btn-start');
+            const stopBtn = card.querySelector('.btn-stop');
+            const restartBtn = card.querySelector('.btn-restart');
+            
+            if (status === 'online') {
+                startBtn.disabled = true;
+                stopBtn.disabled = false;
+                restartBtn.disabled = false;
+            } else {
+                startBtn.disabled = false;
+                stopBtn.disabled = true;
+                restartBtn.disabled = true;
+            }
+        }
+    </script>
 </body>
 </html>
 `;
@@ -459,6 +856,301 @@ app.get('/api/processes', async (req, res) => {
     try {
         const processes = await getPM2Processes();
         res.json(processes);
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+});
+
+// Route to manage PM2 processes (start, stop, restart)
+app.post('/api/processes/:processName/:action', async (req, res) => {
+    try {
+        const { processName, action } = req.params;
+        
+        // Validate action
+        if (!['start', 'stop', 'restart'].includes(action)) {
+            return res.status(400).json({ error: 'Invalid action. Use start, stop, or restart.' });
+        }
+        
+        // Execute PM2 command
+        const command = `pm2 ${action} ${processName}`;
+        
+        exec(command, (error, stdout, stderr) => {
+            if (error) {
+                console.error(`PM2 ${action} error:`, error);
+                return res.status(500).json({ 
+                    error: `Failed to ${action} process ${processName}`,
+                    details: error.message,
+                    stderr: stderr
+                });
+            }
+            
+            res.json({
+                success: true,
+                action: action,
+                processName: processName,
+                message: `Successfully ${action}ed process ${processName}`,
+                output: stdout
+            });
+        });
+        
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+});
+
+// Route to perform git pull for a process
+app.post('/api/git-pull/:processName', async (req, res) => {
+    try {
+        const { processName } = req.params;
+        
+        // Get all PM2 processes to find the working directory
+        const processes = await getPM2Processes();
+        const process = processes.find(p => p.name === processName);
+        
+        if (!process) {
+            return res.status(404).json({ error: `Process ${processName} not found` });
+        }
+        
+        const workingDir = process.pm2_env.pm_cwd;
+        
+        if (!workingDir) {
+            return res.status(400).json({ error: `No working directory found for process ${processName}` });
+        }
+        
+        // Check if directory exists
+        if (!fs.existsSync(workingDir)) {
+            return res.status(400).json({ error: `Working directory ${workingDir} does not exist` });
+        }
+        
+        // Execute git pull in the process's working directory
+        const command = `cd "${workingDir}" && git pull`;
+        
+        exec(command, (error, stdout, stderr) => {
+            if (error) {
+                console.error(`Git pull error for ${processName}:`, error);
+                return res.json({
+                    success: false,
+                    error: `Git pull failed for ${processName}`,
+                    details: error.message,
+                    output: stderr || stdout,
+                    workingDir: workingDir
+                });
+            }
+            
+            const output = stdout || 'Git pull completed successfully';
+            
+            res.json({
+                success: true,
+                processName: processName,
+                workingDir: workingDir,
+                output: output,
+                stderr: stderr
+            });
+        });
+        
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+});
+
+// Route to perform npm install for a process
+app.post('/api/npm-install/:processName', async (req, res) => {
+    try {
+        const { processName } = req.params;
+        
+        // Get all PM2 processes to find the working directory
+        const processes = await getPM2Processes();
+        const process = processes.find(p => p.name === processName);
+        
+        if (!process) {
+            return res.status(404).json({ error: `Process ${processName} not found` });
+        }
+        
+        const workingDir = process.pm2_env.pm_cwd;
+        
+        if (!workingDir) {
+            return res.status(400).json({ error: `No working directory found for process ${processName}` });
+        }
+        
+        // Check if directory exists
+        if (!fs.existsSync(workingDir)) {
+            return res.status(400).json({ error: `Working directory ${workingDir} does not exist` });
+        }
+        
+        // Check if package.json exists
+        const packageJsonPath = path.join(workingDir, 'package.json');
+        if (!fs.existsSync(packageJsonPath)) {
+            return res.status(400).json({ error: `package.json not found in ${workingDir}` });
+        }
+        
+        // Execute npm install in the process's working directory
+        const command = `cd "${workingDir}" && npm install`;
+        
+        exec(command, { timeout: 300000 }, (error, stdout, stderr) => { // 5 minute timeout
+            if (error) {
+                console.error(`NPM install error for ${processName}:`, error);
+                return res.json({
+                    success: false,
+                    error: `NPM install failed for ${processName}`,
+                    details: error.message,
+                    output: stderr || stdout,
+                    workingDir: workingDir
+                });
+            }
+            
+            const output = stdout || 'NPM install completed successfully';
+            
+            res.json({
+                success: true,
+                processName: processName,
+                workingDir: workingDir,
+                output: output,
+                stderr: stderr
+            });
+        });
+        
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+});
+
+// Route to perform npm run build for a process
+app.post('/api/npm-build/:processName', async (req, res) => {
+    try {
+        const { processName } = req.params;
+        
+        // Get all PM2 processes to find the working directory
+        const processes = await getPM2Processes();
+        const process = processes.find(p => p.name === processName);
+        
+        if (!process) {
+            return res.status(404).json({ error: `Process ${processName} not found` });
+        }
+        
+        const workingDir = process.pm2_env.pm_cwd;
+        
+        if (!workingDir) {
+            return res.status(400).json({ error: `No working directory found for process ${processName}` });
+        }
+        
+        // Check if directory exists
+        if (!fs.existsSync(workingDir)) {
+            return res.status(400).json({ error: `Working directory ${workingDir} does not exist` });
+        }
+        
+        // Check if package.json exists
+        const packageJsonPath = path.join(workingDir, 'package.json');
+        if (!fs.existsSync(packageJsonPath)) {
+            return res.status(400).json({ error: `package.json not found in ${workingDir}` });
+        }
+        
+        // Check if build script exists in package.json
+        try {
+            const packageJson = JSON.parse(fs.readFileSync(packageJsonPath, 'utf8'));
+            if (!packageJson.scripts || !packageJson.scripts.build) {
+                return res.status(400).json({ error: `No build script found in package.json for ${processName}` });
+            }
+        } catch (parseError) {
+            return res.status(400).json({ error: `Invalid package.json in ${workingDir}` });
+        }
+        
+        // Execute npm run build in the process's working directory
+        const command = `cd "${workingDir}" && npm run build`;
+        
+        exec(command, { timeout: 600000 }, (error, stdout, stderr) => { // 10 minute timeout
+            if (error) {
+                console.error(`NPM build error for ${processName}:`, error);
+                return res.json({
+                    success: false,
+                    error: `NPM build failed for ${processName}`,
+                    details: error.message,
+                    output: stderr || stdout,
+                    workingDir: workingDir
+                });
+            }
+            
+            const output = stdout || 'NPM build completed successfully';
+            
+            res.json({
+                success: true,
+                processName: processName,
+                workingDir: workingDir,
+                output: output,
+                stderr: stderr
+            });
+        });
+        
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+});
+
+// Route to perform npm run deploy for a process
+app.post('/api/npm-deploy/:processName', async (req, res) => {
+    try {
+        const { processName } = req.params;
+        
+        // Get all PM2 processes to find the working directory
+        const processes = await getPM2Processes();
+        const process = processes.find(p => p.name === processName);
+        
+        if (!process) {
+            return res.status(404).json({ error: `Process ${processName} not found` });
+        }
+        
+        const workingDir = process.pm2_env.pm_cwd;
+        
+        if (!workingDir) {
+            return res.status(400).json({ error: `No working directory found for process ${processName}` });
+        }
+        
+        // Check if directory exists
+        if (!fs.existsSync(workingDir)) {
+            return res.status(400).json({ error: `Working directory ${workingDir} does not exist` });
+        }
+        
+        // Check if package.json exists
+        const packageJsonPath = path.join(workingDir, 'package.json');
+        if (!fs.existsSync(packageJsonPath)) {
+            return res.status(400).json({ error: `package.json not found in ${workingDir}` });
+        }
+        
+        // Check if deploy script exists in package.json
+        try {
+            const packageJson = JSON.parse(fs.readFileSync(packageJsonPath, 'utf8'));
+            if (!packageJson.scripts || !packageJson.scripts.deploy) {
+                return res.status(400).json({ error: `No deploy script found in package.json for ${processName}` });
+            }
+        } catch (parseError) {
+            return res.status(400).json({ error: `Invalid package.json in ${workingDir}` });
+        }
+        
+        // Execute npm run deploy in the process's working directory
+        const command = `cd "${workingDir}" && npm run deploy`;
+        
+        exec(command, { timeout: 900000 }, (error, stdout, stderr) => { // 15 minute timeout
+            if (error) {
+                console.error(`NPM deploy error for ${processName}:`, error);
+                return res.json({
+                    success: false,
+                    error: `NPM deploy failed for ${processName}`,
+                    details: error.message,
+                    output: stderr || stdout,
+                    workingDir: workingDir
+                });
+            }
+            
+            const output = stdout || 'NPM deploy completed successfully';
+            
+            res.json({
+                success: true,
+                processName: processName,
+                workingDir: workingDir,
+                output: output,
+                stderr: stderr
+            });
+        });
+        
     } catch (error) {
         res.status(500).json({ error: error.message });
     }
